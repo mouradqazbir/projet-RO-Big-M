@@ -7,111 +7,69 @@ Created on Sat Dec 28 21:26:06 2024
 
 import numpy as np
 
-def solve_linear_program_mixed(c, A=None, b=None, A_eq=None, b_eq=None):
+def methode_grand_m(FOB, MC, VSMC, M=1e7):
     """
-    Résout un problème d'optimisation linéaire général avec NumPy.
-    max z = c @ x
-    sous les contraintes :
-        - A @ x <= b (inégalités)
-        - A_eq @ x = b_eq (égalités)
-        - x >= 0
-    
-    Arguments :
-    - c : Coefficients de la fonction objectif (1D array)
-    - A : Matrice des contraintes d'inégalité (2D array, optionnel)
-    - b : Limites supérieures des inégalités (1D array, optionnel)
-    - A_eq : Matrice des contraintes d'égalité (2D array, optionnel)
-    - b_eq : Limites des égalités (1D array, optionnel)
-    
+    Résout un problème de programmation linéaire en appliquant la méthode du Grand M.
+
+    Paramètres :
+    FOB : Coefficients de la fonction objectif (liste ou numpy array)
+    MC : Matrice représentant les contraintes (numpy array)
+    VSMC : Valeurs du second membre des contraintes (liste ou numpy array)
+    M : Pénalité associée aux variables artificielles (par défaut 1e7)
+
     Retourne :
-    - Solution optimale x et valeur optimale z, ou None si aucune solution.
+    - La solution optimale
+    - La valeur optimale de la fonction objectif
     """
-    # Vérifier les dimensions
-    num_vars = len(c)
-    ineq_constraints = A is not None and b is not None
-    eq_constraints = A_eq is not None and b_eq is not None
+    m, n = MC.shape  # On récupère les dimensions de la matrice des contraintes
 
-    # Construire la matrice étendue pour le tableau simplex
-    num_constraints = (len(b) if ineq_constraints else 0) + (len(b_eq) if eq_constraints else 0)
-    tableau = np.zeros((num_constraints + 1, num_vars + num_constraints + 1))
+    # Étape 1 : Construction du tableau initial
+    tableau = np.hstack((MC, np.eye(m), VSMC.reshape(-1, 1)))  # Ajout des variables artificielles et du vecteur VSMC
+    FOB = np.concatenate((FOB, [M] * m, [0]))  # Mise à jour de la fonction objectif avec les pénalités et le terme constant
 
-    # Ligne de la fonction objectif
-    tableau[0, :num_vars] = -c  # Maximiser en mettant le négatif de c
+    # Définition de la base initiale (indices des variables artificielles)
+    base = list(range(n, n + m))
 
-    # Ajouter les contraintes d'inégalité
-    if ineq_constraints:
-        num_ineq = len(b)
-        tableau[1:num_ineq + 1, :num_vars] = A
-        tableau[1:num_ineq + 1, num_vars:num_vars + num_ineq] = np.eye(num_ineq)
-        tableau[1:num_ineq + 1, -1] = b
-
-    # Ajouter les contraintes d'égalité
-    if eq_constraints:
-        num_eq = len(b_eq)
-        eq_start = 1 + (len(b) if ineq_constraints else 0)
-        tableau[eq_start:eq_start + num_eq, :num_vars] = A_eq
-        tableau[eq_start:eq_start + num_eq, -1] = b_eq
-
-    # Indices des variables de base
-    basis = list(range(num_vars, num_vars + (len(b) if ineq_constraints else 0)))
-
-    # Méthode Simplex
     while True:
-        # Identifier la colonne pivot (le coefficient le plus négatif de la ligne 0)
-        col_pivot = np.argmin(tableau[0, :-1])
-        if tableau[0, col_pivot] >= 0:
-            # Optimalité atteinte (aucun coefficient négatif)
-            break
+        # Étape 2 : Identifier la colonne pivot (colonne avec le plus petit coefficient dans FOB)
+        col_pivot = np.argmin(FOB[:-1])
+        if FOB[col_pivot] >= 0:
+            break  # La solution optimale est atteinte si tous les coefficients sont positifs ou nuls
 
-        # Identifier la ligne pivot (test du rapport minimal)
-        ratios = tableau[1:, -1] / tableau[1:, col_pivot]
-        ratios[ratios <= 0] = np.inf  # Ignorer les rapports négatifs ou nuls
-        row_pivot = np.argmin(ratios) + 1  # +1 car tableau[1:]
+        # Étape 3 : Calcul des rapports pour déterminer la ligne pivot
+        rapports = np.divide(
+            tableau[:, -1], tableau[:, col_pivot], out=np.full_like(tableau[:, -1], np.inf), where=tableau[:, col_pivot] > 0
+        )
+        ligne_pivot = np.argmin(rapports)
 
-        if ratios[row_pivot - 1] == np.inf:
-            # Problème non borné
-            return None, None
-
-        # Pivotage
-        pivot_value = tableau[row_pivot, col_pivot]
-        tableau[row_pivot, :] /= pivot_value
+        # Étape 4 : Réalisation du pivot
+        tableau[ligne_pivot] /= tableau[ligne_pivot, col_pivot]  # Normalisation de la ligne pivot
         for i in range(len(tableau)):
-            if i != row_pivot:
-                tableau[i, :] -= tableau[i, col_pivot] * tableau[row_pivot, :]
+            if i != ligne_pivot:
+                tableau[i] -= tableau[ligne_pivot] * tableau[i, col_pivot]
+
+        # Mise à jour de la fonction objectif
+        FOB -= FOB[col_pivot] * tableau[ligne_pivot]
 
         # Mise à jour de la base
-        basis[row_pivot - 1] = col_pivot
+        base[ligne_pivot] = col_pivot
 
-    # Extraire les solutions
-    x = np.zeros(num_vars)
-    for i, var_index in enumerate(basis):
-        if var_index < num_vars:
-            x[var_index] = tableau[i + 1, -1]
+    # Extraction de la solution optimale
+    solution = np.zeros(n)
+    for i, var in enumerate(base):
+        if var < n:  # Ignorer les variables artificielles
+            solution[var] = tableau[i, -1]
 
-    # Valeur optimale
-    z = tableau[0, -1]
-    return x, z
+    # Calcul de la valeur optimale de la fonction objectif
+    valeur_optimale = FOB[-1]
+    return solution, valeur_optimale
 
 
-# Définition des contraintes et de la fonction objectif
-# Fonction objectif : z = 2x1 + 3x2
-c = np.array([2, 3])  # Coefficients de la fonction objectif
+# Exemple d'utilisation
+FOB = np.array([-2, -3])  # Maximiser Z = 3x1 + 5x2 (coefficients négatifs pour la maximisation)
+MC = np.array([[1, 2], [2, 1]])  # Matrice des contraintes
+VSMC = np.array([8, 6])  # Second membre des contraintes
 
-# Contraintes d'inégalité : A @ x <= b
-A = np.array([[1, 2], [2, 1]])  # Coefficients des contraintes d'inégalité
-b = np.array([8, 6])  # Limites supérieures des inégalités
-
-# Contraintes d'égalité : A_eq @ x = b_eq
-A_eq = np.array([[1, 1]])  # Coefficients des contraintes d'égalité
-b_eq = np.array([5])  # Limites des égalités
-
-# Résolution
-solution, optimal_value = solve_linear_program_mixed(c, A, b, A_eq, b_eq)
-
-# Affichage des résultats
-if solution is not None:
-    print("Solution optimale trouvée :")
-    print("x =", solution)
-    print("Valeur optimale de z =", optimal_value)
-else:
-    print("Aucune solution optimale trouvée.")
+solution, valeur = methode_grand_m(FOB, MC, VSMC)
+print("Solution optimale :", solution)
+print("Valeur optimale :", valeur)
